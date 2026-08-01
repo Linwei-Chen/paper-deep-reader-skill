@@ -3,6 +3,7 @@ audience: research-generalist
 goal: understand
 depth: deep
 language: auto
+visual_mode: auto
 
 reader_background:
   primary_field: ""

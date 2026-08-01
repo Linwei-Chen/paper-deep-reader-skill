@@ -1,9 +1,9 @@
 # Paper Deep Reader
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.1.0-blue.svg)](CHANGELOG.md)
 
-面向跨学科科研人员的来源可追溯论文深读 Agent Skill。它从 PDF、URL、DOI、预印本 ID、标题或全文出发，自动适配**论文领域、读者背景与研究目标**，生成逐图表、可复核、可审查的 Markdown 报告。
+面向跨学科科研人员的来源可追溯论文深读 Agent Skill。它从 PDF、URL、DOI、预印本 ID、标题或全文出发，自动适配**论文领域、读者背景、研究目标与模型视觉能力**，生成逐图表、可复核、可审查的 Markdown 报告。
 
 它不是摘要扩写器。目标是让读者在最短时间内回答：
 
@@ -17,11 +17,12 @@
 ## 特性
 
 - **三遍阅读法**：全局地图 → 机制重构 → 证据审查。
+- **视觉能力双路由**：视觉模型直接核查图片；无视觉模型使用标题、正文引用、结构化来源、PDF 文字层或 OCR，并强制披露限制。
 - **结构化读者画像**：`domain × audience × goal × depth × language` 独立配置。
 - **宽默认、按需专门化**：默认面向有科研训练的通用研究者；支持领域专家、跨学科读者和学生。
 - **多目标路由**：理解、审稿、复现、教学和跨领域迁移采用不同解读重点。
 - **固定六部分报告**：兼顾快速理解与研究级技术深度。
-- **全量视觉账本**：记录 Figure、Table、Algorithm、Scheme、Plate、Box 等编号对象；关键视觉证据嵌入原图并详细解释。
+- **全量视觉账本**：记录 Figure、Table、Algorithm、Scheme、Plate、Box 等编号对象；按视觉能力生成核查裁图或文本证据卡。
 - **形式化零跳步**：解释公式、定义、定理、统计量或分析框架的组成、作用、研究位置和边界。
 - **主张—证据映射**：区分作者主张、论文直接证据、报告推断和外部背景。
 - **逐证据单元审查**：覆盖实验、证明、观测、案例、定性材料与综合分析。
@@ -74,6 +75,10 @@ git clone https://github.com/Linwei-Chen/paper-deep-reader-skill.git \
 
 像审稿人一样严格分析这篇材料学论文。
 
+当前模型没有视觉能力，请使用 text-only 模式精读，并明确哪些图表内容无法核验。
+
+如果当前 DeepSeek V4 接入仅提供文本能力，自动使用 text-only 流程，不要假装看过图片。
+
 只解释式(7)如何对应图3中的步骤。
 ```
 
@@ -89,6 +94,7 @@ audience: research-generalist
 goal: understand
 depth: deep
 language: auto
+visual_mode: auto
 ```
 
 五个维度独立解析：
@@ -98,6 +104,14 @@ language: auto
 - `goal`：`understand`、`review`、`reproduce`、`teach` 或 `transfer`；
 - `depth`：`quick`、`deep` 或 `targeted`；
 - `language`：跟随用户或明确指定。
+
+`visual_mode` 是独立的执行能力设置：
+
+- `auto`：根据当前环境真实能力选择；
+- `visual`：模型能直接读取并检查图片；
+- `text-only`：模型只能使用文字或工具返回的文本。
+
+不要仅凭模型名称判断能力。若某个 DeepSeek V4 接入没有图像输入或图片读取工具，应使用 `text-only`；其他接入若确实具备视觉能力，则按实际能力处理。
 
 用户可以直接用自然语言描述，不必编写 YAML。若希望在一个项目中长期保存偏好：
 
@@ -121,16 +135,21 @@ cp .paper-reader.example.yaml /path/to/project/.paper-reader.yaml
 ├── assets/
 │   ├── pages/
 │   ├── crops/
+│   ├── text/
 │   ├── visual_ledger.md
+│   ├── visual_text_ledger.md
 │   └── visual_manifest.json
 └── source_map.json
 ```
 
+这是两种模式的并集：`visual` 生成页面与裁图，`text-only` 重点生成 `assets/text/`，不会生成 PNG。
+
 - `report.md`：六部分完整解读。
 - `assets/pages/`：PDF 页面预览。
 - `assets/crops/`：经人工核查的关键视觉证据。
-- `visual_manifest.json`：所有编号视觉对象及其关键性、裁图状态和关联主张。
-- `source_map.json`：论文版本、来源、读者画像、页码约定和主张—证据映射。
+- `assets/text/`：按页和按视觉对象生成的 PDF 文字层、标题及正文引用。
+- `visual_manifest.json`：所有编号视觉对象、视觉/文本核验状态和关联主张。
+- `source_map.json`：论文版本、来源、读者画像、视觉能力模式和主张—证据映射。
 
 ## PDF 图表提取
 
@@ -156,6 +175,15 @@ python3 scripts/extract_pdf_assets.py inventory \
   paper.pdf output/assets --dpi 180
 ```
 
+无视觉模型使用：
+
+```bash
+python3 scripts/extract_pdf_assets.py inventory \
+  paper.pdf output/assets --text-only
+```
+
+该模式不生成页面或裁图 PNG，而是生成逐页文本、逐视觉对象文本卡和正文引用。它能够恢复标题、部分表格文字和作者对图表的描述，但**不能**验证坐标轴、颜色、曲线、面板、布局、挑样或裁图完整性。
+
 候选裁图必须人工打开核查。若坐标轴、图例、标题、脚注或面板不完整，可按页面预览的像素坐标重新裁剪：
 
 ```bash
@@ -172,14 +200,22 @@ python3 scripts/validate_report.py output/report.md \
   --strict
 ```
 
+无视觉模式增加：
+
+```bash
+python3 scripts/validate_report.py output/report.md \
+  --manifest output/assets/visual_manifest.json \
+  --text-only --strict
+```
+
 严格模式会检查：
 
 - 六个顶层部分是否完整且顺序正确；
 - 一句话总结是否过长（中文 50 字，非中文 30 词）；
 - 是否残留 `TODO` 或模板占位符；
-- 本地图片是否存在；
+- 本地图片或文本证据卡是否存在；
 - 所有编号视觉对象是否进入覆盖清单；
-- 关键视觉对象是否已人工核查并嵌入报告；
+- visual 模式是否完成图片核查；text-only 模式是否完成文本证据审查并声明限制；
 - `source_map.json` 是否包含有效主张和证据。
 
 ## 仓库结构
@@ -196,6 +232,7 @@ python3 scripts/validate_report.py output/report.md \
 ├── references/
 │   ├── audience-profiles.md
 │   ├── domain-lenses.md
+│   ├── visual-capability.md
 │   ├── reading-protocol.md
 │   ├── report-template.md
 │   ├── paper-type-lenses.md
@@ -216,6 +253,7 @@ python3 scripts/validate_report.py output/report.md \
 - 逐证据单元而非只报主结果；
 - 主张—证据可追溯；
 - 论文类型、学科 Lens、读者背景和研究目标相互独立；
+- 没有视觉能力时显式降级，而不是模拟视觉观察；
 - 输出必须支持“复现、引用、借鉴或跳过”的研究决策。
 
 完整调研来源和取舍见 [`DESIGN_NOTES.md`](DESIGN_NOTES.md)。
@@ -223,6 +261,7 @@ python3 scripts/validate_report.py output/report.md \
 ## 限制
 
 - 自动裁图是候选结果，不能替代人工视觉核查。
+- text-only 模式能恢复文字证据，但不能独立完成像素级图表审查；核心视觉结论可能需要视觉模型或人工交接。
 - 扫描 PDF 可能需要外部 OCR；本仓库不上传论文到第三方服务。
 - 本 Skill 默认不运行论文代码、开展实验或声称完成实际复现。
 - “新颖性”和“SOTA”必须通过额外文献检索才能独立验证，不能只依据论文自述。
@@ -235,6 +274,7 @@ python3 scripts/validate_report.py output/report.md \
 - 新版式或跨页表格的提取改进；
 - 新学科与子领域审查 Lens；
 - 更完善的读者画像和目标预设；
+- text-only 表格恢复、OCR 和无障碍描述改进；
 - 真实论文上的失败案例；
 - 报告校验规则与跨平台兼容性改进。
 
@@ -244,4 +284,4 @@ python3 scripts/validate_report.py output/report.md \
 
 ---
 
-**English summary:** A source-grounded Agent Skill for deep reading individual academic papers across disciplines. It adapts to the paper domain, reader expertise, and goals; inventories key visuals; reconstructs formal and methodological logic; audits claim-to-evidence links; and produces publication-ready Markdown. Computer vision remains deeply supported as an optional domain lens. The skill is primarily tested in Cursor.
+**English summary:** A source-grounded Agent Skill for deep reading individual academic papers across disciplines. It supports both vision-capable and text-only models: vision models verify image assets directly, while no-vision models use structured sources, captions, PDF text, body references, and explicit uncertainty boundaries. It also adapts to reader expertise and goals, audits claim-to-evidence links, and produces publication-ready Markdown. The skill is primarily tested in Cursor.

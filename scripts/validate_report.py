@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate structure, grounding, visual coverage, and local assets in a report."""
+"""Validate report structure, grounding, and visual or text-only evidence coverage."""
 
 from __future__ import annotations
 
@@ -44,6 +44,11 @@ ANCHOR_RE = re.compile(
 )
 CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 WORD_RE = re.compile(r"\b[\w'-]+\b", re.UNICODE)
+TEXT_ONLY_DISCLOSURE_RE = re.compile(
+    r"无视觉(?:模式|模型)|视觉内容(?:未|没有)(?:直接)?核验"
+    r"|text[- ]only mode|visual (?:content|pixels?) (?:was |were )?not (?:directly )?verified",
+    re.IGNORECASE,
+)
 
 
 class Results:
@@ -116,7 +121,11 @@ def resolve_local_target(report_path: Path, raw_target: str) -> Path | None:
 
 
 def validate_structure(
-    report_path: Path, text: str, sections: dict[int, str], results: Results
+    report_path: Path,
+    text: str,
+    sections: dict[int, str],
+    results: Results,
+    text_only: bool = False,
 ) -> None:
     if not re.search(r"^#\s+\S", text, re.MULTILINE):
         results.error("Missing level-1 report title.")
@@ -152,7 +161,10 @@ def validate_structure(
             f"({plain_length} visible characters; expected at least {minimum})."
         )
 
-    if not re.search(r"图表.*覆盖|覆盖.*图表", sections.get(4, "")):
+    if not re.search(
+        r"(?:图表|视觉).{0,12}覆盖|覆盖.{0,12}(?:图表|视觉)",
+        sections.get(4, ""),
+    ):
         results.error("Section 4 must contain a complete visual-coverage ledger.")
     if not re.search(r"强支持|部分支持|弱支持|未支持", sections.get(4, "")):
         results.error("Section 4 must grade claim support strength.")
@@ -160,6 +172,11 @@ def validate_structure(
         results.error("Section 5 must include future research directions.")
     if "最终判断" not in sections.get(6, ""):
         results.warn("Section 6 should contain an explicit final judgment.")
+    if text_only and not TEXT_ONLY_DISCLOSURE_RE.search(text):
+        results.error(
+            "Text-only reports must explicitly disclose that visual content was "
+            "not directly verified."
+        )
 
     for pattern in PLACEHOLDER_PATTERNS:
         match = pattern.search(text)
@@ -255,10 +272,25 @@ def validate_manifest(
     report_path: Path,
     text: str,
     results: Results,
+    text_only: bool = False,
 ) -> None:
     manifest = load_json(manifest_path, results, "Visual manifest")
     if not isinstance(manifest, dict):
         return
+
+    manifest_mode = str(manifest.get("analysis_mode", "")).strip()
+    if text_only and manifest_mode != "text-only":
+        results.error(
+            "Text-only validation requires a manifest with analysis_mode='text-only'."
+        )
+    if not text_only and manifest_mode == "text-only":
+        results.error(
+            "Manifest was generated in text-only mode; rerun validation with --text-only."
+        )
+    try:
+        manifest_schema_version = int(manifest.get("schema_version", 1))
+    except (TypeError, ValueError):
+        manifest_schema_version = 1
 
     visuals = manifest.get("visuals", [])
     if not isinstance(visuals, list):
@@ -266,6 +298,7 @@ def validate_manifest(
         return
 
     report_images = resolved_image_paths(report_path, text)
+    allowed_text_only_images: set[Path] = set()
     unclassified = 0
     key_count = 0
 
@@ -291,6 +324,111 @@ def validate_manifest(
             continue
 
         key_count += 1
+        if text_only:
+            visual_verification = str(
+                visual.get("visual_verification", "")
+            ).strip()
+            if visual_verification not in {
+                "not-performed",
+                "externally-verified",
+            }:
+                results.error(
+                    f"Key visual has invalid text-only visual_verification: {label}."
+                )
+
+            text_asset = visual.get("text_asset")
+            if not text_asset:
+                results.error(f"Key visual has no text_asset: {label}.")
+            else:
+                text_asset_path = (
+                    manifest_path.parent / str(text_asset)
+                ).resolve()
+                if not text_asset_path.is_file():
+                    results.error(
+                        f"Text evidence asset for {label} does not exist: "
+                        f"{text_asset_path}"
+                    )
+
+            text_review = visual.get("text_review")
+            if not isinstance(text_review, dict):
+                results.error(f"Key visual has no text_review object: {label}.")
+            else:
+                if text_review.get("status") != "complete":
+                    results.error(f"Key visual text review is incomplete: {label}.")
+                sources = text_review.get("sources")
+                if (
+                    not isinstance(sources, list)
+                    or not sources
+                    or not all(
+                        isinstance(source, str) and source.strip()
+                        for source in sources
+                    )
+                ):
+                    results.error(
+                        f"Key visual text review has no valid sources: {label}."
+                    )
+                if not str(text_review.get("notes", "")).strip():
+                    results.error(
+                        f"Key visual text review has no notes: {label}."
+                    )
+                if not str(text_review.get("limitations", "")).strip():
+                    results.error(
+                        f"Key visual text review has no limitations: {label}."
+                    )
+
+            if (
+                visual_verification == "not-performed"
+                and visual.get("crop_review_required") is False
+            ):
+                results.error(
+                    f"Unverified text-only visual cannot clear crop review: {label}."
+                )
+
+            candidate_crop = visual.get("candidate_crop")
+            if candidate_crop and visual_verification == "not-performed":
+                candidate_path = (
+                    manifest_path.parent / str(candidate_crop)
+                ).resolve()
+                if candidate_path in report_images:
+                    results.error(
+                        f"Unverified candidate crop is embedded in text-only report: "
+                        f"{label}."
+                    )
+            if visual_verification == "externally-verified":
+                if visual.get("crop_review_required") is not False:
+                    results.error(
+                        f"Externally verified visual still requires crop review: {label}."
+                    )
+                if not str(visual.get("review_notes", "")).strip():
+                    results.error(
+                        f"Externally verified visual has no reviewer notes: {label}."
+                    )
+                selected_asset = visual.get("selected_asset")
+                if not selected_asset:
+                    results.error(
+                        f"Externally verified visual has no selected_asset: {label}."
+                    )
+                else:
+                    selected_path = (
+                        manifest_path.parent / str(selected_asset)
+                    ).resolve()
+                    allowed_text_only_images.add(selected_path)
+                    if not selected_path.is_file():
+                        results.error(
+                            f"Externally verified asset does not exist: {selected_path}"
+                        )
+                    if selected_path not in report_images:
+                        results.error(
+                            f"Externally verified asset is not embedded: {label}."
+                        )
+            continue
+
+        if (
+            manifest_schema_version >= 2
+            and visual.get("visual_verification")
+            not in {"complete", "externally-verified"}
+        ):
+            results.error(f"Key visual lacks completed visual verification: {label}.")
         if visual.get("crop_review_required") is not False:
             results.error(f"Key visual still requires crop review: {label}.")
 
@@ -315,12 +453,28 @@ def validate_manifest(
             "Manifest contains no detected visuals; manually confirm the paper has no "
             "numbered figures/tables or add missed entries."
         )
+    if text_only:
+        for image in IMAGE_RE.finditer(text):
+            local_path = resolve_local_target(report_path, image.group("path"))
+            if local_path is None:
+                results.error(
+                    "Text-only reports cannot embed remote/data images without a "
+                    "manifested external visual verification."
+                )
+            elif local_path not in allowed_text_only_images:
+                results.error(
+                    f"Text-only report embeds an unverified image: {image.group('path')}"
+                )
     results.note(
         f"Visual coverage: {len(visuals)} total, {key_count} marked key."
     )
 
 
-def validate_source_map(path: Path, results: Results) -> None:
+def validate_source_map(
+    path: Path,
+    results: Results,
+    text_only: bool = False,
+) -> None:
     source_map = load_json(path, results, "Source map")
     if not isinstance(source_map, dict):
         return
@@ -338,11 +492,16 @@ def validate_source_map(path: Path, results: Results) -> None:
             if not paper.get(field):
                 results.error(f"source_map.json paper.{field} is missing.")
 
-    schema_version = source_map.get("schema_version", 1)
-    if schema_version == 2:
+    try:
+        schema_version = int(source_map.get("schema_version", 1))
+    except (TypeError, ValueError):
+        schema_version = -1
+    if schema_version in {2, 3}:
         profile = source_map.get("reader_profile")
         if not isinstance(profile, dict):
-            results.error("source_map.json schema v2 requires a 'reader_profile' object.")
+            results.error(
+                "source_map.json schema v2+ requires a 'reader_profile' object."
+            )
         else:
             for field in ("domain", "audience", "goal", "depth", "language"):
                 if not profile.get(field):
@@ -364,6 +523,69 @@ def validate_source_map(path: Path, results: Results) -> None:
                 )
     elif schema_version != 1:
         results.warn(f"Unrecognized source_map schema_version: {schema_version!r}.")
+
+    if text_only and schema_version != 3:
+        results.error(
+            "Text-only reports require source_map schema v3 execution metadata."
+        )
+    if schema_version == 3:
+        execution = source_map.get("execution")
+        if not isinstance(execution, dict):
+            results.error(
+                "source_map.json schema v3 requires an 'execution' object."
+            )
+        else:
+            visual_mode = execution.get("visual_mode")
+            visual_verification = execution.get("visual_verification")
+            if visual_mode not in {"visual", "text-only"}:
+                results.error(
+                    "source_map.json execution.visual_mode must be visual or text-only."
+                )
+            if visual_verification not in {
+                "complete",
+                "not-performed",
+                "externally-verified",
+            }:
+                results.error(
+                    "source_map.json execution.visual_verification is invalid."
+                )
+            if text_only and visual_mode != "text-only":
+                results.error(
+                    "Text-only validation conflicts with source_map visual_mode."
+                )
+            if not text_only and visual_mode == "text-only":
+                results.error(
+                    "source_map visual_mode is text-only; use --text-only."
+                )
+            if (
+                not text_only
+                and visual_mode == "visual"
+                and visual_verification
+                not in {"complete", "externally-verified"}
+            ):
+                results.error(
+                    "Visual source_map requires completed visual verification."
+                )
+            if (
+                text_only
+                and visual_verification
+                not in {"not-performed", "externally-verified"}
+            ):
+                results.error(
+                    "Text-only source_map cannot claim direct visual verification."
+                )
+            text_sources = execution.get("text_evidence_sources")
+            if text_only and (
+                not isinstance(text_sources, list)
+                or not text_sources
+                or not all(
+                    isinstance(source, str) and source.strip()
+                    for source in text_sources
+                )
+            ):
+                results.error(
+                    "Text-only source_map requires non-empty text_evidence_sources."
+                )
 
     claims = source_map.get("claims")
     if not isinstance(claims, list) or not claims:
@@ -441,6 +663,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Treat warnings as failures.",
     )
+    parser.add_argument(
+        "--text-only",
+        action="store_true",
+        help=(
+            "Validate the no-vision workflow: require disclosure and completed "
+            "text evidence reviews instead of direct crop verification."
+        ),
+    )
     return parser
 
 
@@ -454,11 +684,23 @@ def main() -> int:
     text = report_path.read_text(encoding="utf-8")
     results = Results()
     sections = split_sections(text, results)
-    validate_structure(report_path, text, sections, results)
+    validate_structure(
+        report_path,
+        text,
+        sections,
+        results,
+        text_only=args.text_only,
+    )
 
     if args.manifest:
         manifest_path = Path(args.manifest).expanduser().resolve()
-        validate_manifest(manifest_path, report_path, text, results)
+        validate_manifest(
+            manifest_path,
+            report_path,
+            text,
+            results,
+            text_only=args.text_only,
+        )
     else:
         results.warn("No visual manifest supplied; full figure/table coverage is unverified.")
 
@@ -468,7 +710,11 @@ def main() -> int:
             if args.source_map
             else report_path.parent / "source_map.json"
         )
-        validate_source_map(source_map_path, results)
+        validate_source_map(
+            source_map_path,
+            results,
+            text_only=args.text_only,
+        )
 
     return print_results(results, args.strict)
 

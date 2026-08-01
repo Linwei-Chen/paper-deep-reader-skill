@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "paper": {
     "title": "REPLACE_ME",
     "authors": [],
@@ -24,6 +24,11 @@
     "goal": "REPLACE_ME",
     "depth": "REPLACE_ME",
     "language": "REPLACE_ME"
+  },
+  "execution": {
+    "visual_mode": "REPLACE_ME",
+    "visual_verification": "REPLACE_ME",
+    "text_evidence_sources": []
   },
   "claims": [
     {

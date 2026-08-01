@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Render PDF pages, inventory captions, and create reviewable visual crops.
+"""Inventory PDF visuals and create visual or text-only review assets.
 
 The automatic crops are intentionally conservative candidates, not trusted
 final assets. Open every crop and use the ``crop`` subcommand when an axis,
-legend, caption, footnote, or panel is missing.
+legend, caption, footnote, or panel is missing. Text-only assets expose captions,
+region text, and body references but never count as visual verification.
 """
 
 from __future__ import annotations
@@ -160,6 +161,75 @@ def canonical_kind(raw_kind: str) -> str:
 def safe_label(kind: str, number: str, page_number: int) -> str:
     compact_number = re.sub(r"[^A-Za-z0-9.-]+", "", number.replace(" ", ""))
     return f"{kind}-{compact_number or 'unknown'}-p{page_number:03d}".lower()
+
+
+def extract_page_text(page: Any, clip: Any | None = None) -> str:
+    kwargs: dict[str, Any] = {"sort": True}
+    if clip is not None:
+        kwargs["clip"] = clip
+    try:
+        value = page.get_text("text", **kwargs)
+    except TypeError:
+        kwargs.pop("sort", None)
+        try:
+            value = page.get_text("text", **kwargs)
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return str(value or "").strip()
+
+
+def bounded_text(value: str, limit: int = 12000) -> str:
+    cleaned = "\n".join(line.rstrip() for line in value.splitlines()).strip()
+    cleaned = re.sub(r"\n{4,}", "\n\n\n", cleaned)
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[:limit].rstrip() + "\n\n[TRUNCATED BY EXTRACTOR]"
+
+
+def visual_reference_pattern(kind: str, number: str) -> re.Pattern[str]:
+    prefixes = {
+        "figure": r"(?:Figure|Fig(?:ure)?\.?|图|附图|补充图)",
+        "table": r"(?:Table|表|附表|补充表)",
+        "algorithm": r"(?:Algorithm|算法)",
+        "scheme": r"(?:Scheme|方案)",
+        "plate": r"(?:Plate|图版)",
+        "box": r"(?:Box|框)",
+        "chart": r"(?:Chart|图表)",
+    }
+    prefix = prefixes.get(kind, re.escape(kind))
+    escaped_number = re.escape(number).replace(r"\ ", r"\s*")
+    return re.compile(
+        prefix + r"\s*\.?\s*" + escaped_number + r"(?![A-Za-z0-9])",
+        re.IGNORECASE,
+    )
+
+
+def collect_body_references(
+    page_blocks: Sequence[dict[str, Any]],
+    kind: str,
+    number: str,
+    limit: int = 12,
+) -> list[dict[str, Any]]:
+    pattern = visual_reference_pattern(kind, number)
+    references: list[dict[str, Any]] = []
+    seen: set[tuple[int, str]] = set()
+    for page_record in page_blocks:
+        page_number = int(page_record["page"])
+        for raw_text in page_record["blocks"]:
+            text = re.sub(r"\s+", " ", str(raw_text)).strip()
+            if not text or CAPTION_RE.match(text) or not pattern.search(text):
+                continue
+            text = bounded_text(text, 1600)
+            key = (page_number, text)
+            if key in seen:
+                continue
+            seen.add(key)
+            references.append({"page": page_number, "text": text})
+            if len(references) >= limit:
+                return references
+    return references
 
 
 def extract_caption_blocks(
@@ -418,11 +488,22 @@ def render_clip_with_fitz(
     return int(pixmap.width), int(pixmap.height)
 
 
-def write_ledger(output_dir: Path, records: Sequence[dict[str, Any]]) -> None:
+def write_ledger(
+    output_dir: Path,
+    records: Sequence[dict[str, Any]],
+    text_only: bool,
+) -> None:
+    review_note = (
+        "Text-only mode: inspect the generated text evidence; visual pixels remain "
+        "unverified."
+        if text_only
+        else "Automatic crops are candidates. Visually inspect every asset before "
+        "publication."
+    )
     lines = [
         "# Visual inventory",
         "",
-        "> Automatic crops are candidates. Visually inspect every asset before publication.",
+        f"> {review_note}",
         "",
         "| ID | Label | PDF page | Caption | Candidate crop | Review |",
         "|---|---|---:|---|---|---|",
@@ -431,11 +512,122 @@ def write_ledger(output_dir: Path, records: Sequence[dict[str, Any]]) -> None:
         caption = str(item.get("caption") or item.get("raw_text") or "").replace("|", r"\|")
         caption = re.sub(r"\s+", " ", caption)
         crop = item.get("candidate_crop") or "not generated"
+        review = "TEXT REVIEW REQUIRED" if text_only else "VISUAL REVIEW REQUIRED"
         lines.append(
             f"| {item['id']} | {item['label']} | {item['page']} | "
-            f"{caption} | `{crop}` | REQUIRED |"
+            f"{caption} | `{crop}` | {review} |"
         )
     (output_dir / "visual_ledger.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_text_assets(
+    output_dir: Path,
+    records: Sequence[dict[str, Any]],
+) -> None:
+    visual_text_dir = output_dir / "text" / "visuals"
+    visual_text_dir.mkdir(parents=True, exist_ok=True)
+    ledger_lines = [
+        "# Text-only visual evidence ledger",
+        "",
+        "> Extracted text is not visual verification. Do not infer unreported axes, "
+        "colors, curves, panels, layout, or crop completeness.",
+        "",
+    ]
+
+    for item in records:
+        crop_text = bounded_text(str(item.pop("_extracted_region_text", "")))
+        references = item.pop("_body_references", [])
+        sources: list[str] = []
+        if item.get("raw_text") or item.get("caption"):
+            sources.append("caption")
+        if crop_text:
+            sources.append("suggested-region-text")
+        if references:
+            sources.append("body-references")
+
+        if not sources:
+            status = "unavailable"
+        elif sources == ["caption"]:
+            status = "caption-only"
+        else:
+            status = "partial"
+
+        relative_path = Path("text") / "visuals" / f"{item['id']}.md"
+        item["text_asset"] = str(relative_path)
+        item["available_text_sources"] = sources
+        item["text_extraction_status"] = status
+        item["text_review"] = {
+            "status": "pending",
+            "sources": [],
+            "notes": "",
+            "limitations": "",
+        }
+
+        caption_text = str(item.get("raw_text") or item.get("caption") or "").strip()
+        card_lines = [
+            f"# Text evidence: {item['label']}",
+            "",
+            "> This file contains extracted text, not a visual interpretation. "
+            "The image pixels, layout, axes, colors, and panels were not verified.",
+            "",
+            f"- **PDF page:** {item['page']}",
+            f"- **Text extraction status:** {status}",
+            f"- **Available sources:** {', '.join(sources) if sources else 'none'}",
+            f"- **Suggested region:** {item['suggested_crop_bbox_points']}",
+            "",
+            "## Caption",
+            "",
+            caption_text or "[No caption text recovered]",
+            "",
+            "## Text from suggested visual region",
+            "",
+            "~~~text",
+            crop_text or "[No text recovered from the suggested region]",
+            "~~~",
+            "",
+            "## Body references",
+            "",
+        ]
+        if references:
+            for reference in references:
+                card_lines.append(
+                    f"- [PDF p.{reference['page']}] {reference['text']}"
+                )
+        else:
+            card_lines.append("- [No body reference recovered]")
+        card_lines.extend(
+            [
+                "",
+                "## Mandatory limitation",
+                "",
+                "A text-only model must not claim direct observation of visual trends, "
+                "layout, axes, colors, panels, qualitative examples, or crop completeness.",
+                "",
+            ]
+        )
+        (output_dir / relative_path).write_text(
+            "\n".join(card_lines),
+            encoding="utf-8",
+        )
+
+        compact_caption = re.sub(r"\s+", " ", caption_text) or "[unavailable]"
+        ledger_lines.extend(
+            [
+                f"## {item['label']}",
+                "",
+                f"- **PDF page:** {item['page']}",
+                f"- **Status:** {status}",
+                f"- **Sources:** {', '.join(sources) if sources else 'none'}",
+                f"- **Text card:** [{relative_path.name}]({relative_path.as_posix()})",
+                f"- **Caption:** {compact_caption}",
+                "",
+            ]
+        )
+
+    (output_dir / "visual_text_ledger.md").write_text(
+        "\n".join(ledger_lines),
+        encoding="utf-8",
+    )
 
 
 def inventory(args: argparse.Namespace) -> int:
@@ -449,8 +641,11 @@ def inventory(args: argparse.Namespace) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     pages_dir = output_dir / "pages"
     crops_dir = output_dir / "crops"
-    pages_dir.mkdir(parents=True, exist_ok=True)
-    if not args.no_auto_crop:
+    text_pages_dir = output_dir / "text" / "pages"
+    text_pages_dir.mkdir(parents=True, exist_ok=True)
+    if not args.text_only:
+        pages_dir.mkdir(parents=True, exist_ok=True)
+    if not args.text_only and not args.no_auto_crop:
         crops_dir.mkdir(parents=True, exist_ok=True)
 
     document = fitz.open(str(pdf_path))
@@ -461,17 +656,33 @@ def inventory(args: argparse.Namespace) -> int:
             print(f"ERROR: invalid --pages value: {exc}", file=sys.stderr)
             return 2
         page_records: list[dict[str, Any]] = []
+        page_block_records: list[dict[str, Any]] = []
         visual_records: list[dict[str, Any]] = []
+        total_text_characters = 0
 
         for page_index in page_indices:
             page = document.load_page(page_index)
             page_number = page_index + 1
-            page_image = pages_dir / f"page-{page_number:03d}.png"
-            width, height = render_clip_with_fitz(
-                fitz, page, page.rect, page_image, args.dpi
+            captions, graphic_boxes, text_blocks = extract_caption_blocks(fitz, page)
+            page_text = extract_page_text(page)
+            total_text_characters += len(page_text)
+            page_text_path = text_pages_dir / f"page-{page_number:03d}.txt"
+            page_text_path.write_text(page_text + ("\n" if page_text else ""), encoding="utf-8")
+            page_block_records.append(
+                {
+                    "page": page_number,
+                    "blocks": [item["text"] for item in text_blocks],
+                }
             )
 
-            captions, graphic_boxes, text_blocks = extract_caption_blocks(fitz, page)
+            page_image: Path | None = None
+            width: int | None = None
+            height: int | None = None
+            if not args.text_only:
+                page_image = pages_dir / f"page-{page_number:03d}.png"
+                width, height = render_clip_with_fitz(
+                    fitz, page, page.rect, page_image, args.dpi
+                )
             page_records.append(
                 {
                     "page": page_number,
@@ -479,7 +690,11 @@ def inventory(args: argparse.Namespace) -> int:
                     "height_pixels": height,
                     "width_points": round(float(page.rect.width), 3),
                     "height_points": round(float(page.rect.height), 3),
-                    "image": str(page_image.relative_to(output_dir)),
+                    "image": (
+                        str(page_image.relative_to(output_dir)) if page_image else None
+                    ),
+                    "text": str(page_text_path.relative_to(output_dir)),
+                    "text_characters": len(page_text),
                     "caption_count": len(captions),
                 }
             )
@@ -498,9 +713,10 @@ def inventory(args: argparse.Namespace) -> int:
                     text_blocks,
                     args.padding,
                 )
+                extracted_region_text = extract_page_text(page, clip=crop_rect)
                 crop_path: Path | None = None
                 crop_size: tuple[int, int] | None = None
-                if not args.no_auto_crop:
+                if not args.text_only and not args.no_auto_crop:
                     crop_path = crops_dir / f"{item_id}.png"
                     crop_size = render_clip_with_fitz(
                         fitz, page, crop_rect, crop_path, args.dpi
@@ -524,23 +740,41 @@ def inventory(args: argparse.Namespace) -> int:
                         ),
                         "selected_asset": None,
                         "candidate_crop_size_pixels": list(crop_size) if crop_size else None,
-                        "source_page_image": str(page_image.relative_to(output_dir)),
+                        "source_page_image": (
+                            str(page_image.relative_to(output_dir)) if page_image else None
+                        ),
+                        "source_page_text": str(page_text_path.relative_to(output_dir)),
                         "crop_confidence": confidence,
                         "crop_review_required": True,
+                        "visual_verification": (
+                            "not-performed" if args.text_only else "pending"
+                        ),
                         "review_notes": "",
                         "key": None,
                         "claim_ids": [],
+                        "_extracted_region_text": extracted_region_text,
                     }
                 )
 
+        for visual in visual_records:
+            visual["_body_references"] = collect_body_references(
+                page_block_records,
+                str(visual["kind"]),
+                str(visual["number"]),
+            )
+        write_text_assets(output_dir, visual_records)
+
         manifest = {
-            "schema_version": 1,
+            "schema_version": 2,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "source_pdf": str(pdf_path),
             "source_sha256": sha256_file(pdf_path),
             "page_count": document.page_count,
             "render_dpi": args.dpi,
             "selected_pages": [index + 1 for index in page_indices],
+            "analysis_mode": "text-only" if args.text_only else "visual",
+            "text_layer_available": total_text_characters > 0,
+            "text_layer_characters": total_text_characters,
             "automatic_crops_are_unverified": True,
             "pages": page_records,
             "visuals": visual_records,
@@ -550,12 +784,33 @@ def inventory(args: argparse.Namespace) -> int:
             json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
-        write_ledger(output_dir, visual_records)
+        write_ledger(output_dir, visual_records, args.text_only)
 
-        print(f"Rendered {len(page_records)} page(s) to {pages_dir}")
+        if args.text_only:
+            print(f"Extracted text from {len(page_records)} page(s) to {text_pages_dir}")
+        else:
+            print(f"Rendered {len(page_records)} page(s) to {pages_dir}")
         print(f"Detected {len(visual_records)} numbered visual caption(s)")
         print(f"Manifest: {manifest_path}")
-        if visual_records:
+        print(f"Text evidence ledger: {output_dir / 'visual_text_ledger.md'}")
+        if args.text_only:
+            print(
+                "TEXT-ONLY MODE: visual pixels were not inspected. Complete each key "
+                "item's text_review and retain explicit limitations."
+            )
+            if total_text_characters == 0:
+                print(
+                    "WARNING: the PDF has no extractable text layer; use a matching "
+                    "structured source or local OCR.",
+                    file=sys.stderr,
+                )
+            if not visual_records:
+                print(
+                    "WARNING: no numbered captions were detected; inspect structured "
+                    "text sources or build the visual ledger manually.",
+                    file=sys.stderr,
+                )
+        elif visual_records:
             print("REVIEW REQUIRED: open every candidate crop before embedding it.")
         else:
             print(
@@ -629,7 +884,10 @@ def crop(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Create a page/caption inventory and reviewable PDF visual crops."
+        description=(
+            "Create a PDF visual inventory with reviewable crops and text-only "
+            "evidence assets."
+        )
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -655,6 +913,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-auto-crop",
         action="store_true",
         help="Render pages and inventory captions without candidate crops.",
+    )
+    inventory_parser.add_argument(
+        "--text-only",
+        action="store_true",
+        help=(
+            "Skip page/crop images and emit caption, region-text, and body-reference "
+            "assets for models without vision."
+        ),
     )
     inventory_parser.set_defaults(handler=inventory)
 
