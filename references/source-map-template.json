@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "paper": {
+    "title": "REPLACE_ME",
+    "authors": [],
+    "venue": "REPLACE_ME",
+    "version": "REPLACE_ME",
+    "sources": [
+      {
+        "type": "pdf",
+        "location": "REPLACE_ME",
+        "sha256": "REPLACE_ME",
+        "role": "primary"
+      }
+    ],
+    "page_convention": "1-based PDF page numbers"
+  },
+  "claims": [
+    {
+      "id": "C1",
+      "claim": "REPLACE_ME",
+      "status": "strong",
+      "inference": false,
+      "evidence": [
+        {
+          "type": "figure",
+          "locator": "Figure 1, PDF p.1",
+          "note": "REPLACE_ME"
+        }
+      ],
+      "caveats": []
+    }
+  ]
+}
