@@ -1,11 +1,11 @@
 ---
 name: paper-deep-reader
-description: Produces source-grounded, figure/table-aware deep-reading reports for a single academic paper, with plain-language explanations, method reconstruction, equation walkthroughs, experiment-by-experiment evidence audits, and publication-ready Markdown with embedded visuals. Use when the user provides a paper PDF, URL, DOI, arXiv ID, title, or full text and asks for 论文解读、论文剖析、精读、逐图表分析、快速看懂、explain/analyze/deep-read this paper. Optimized for computer-vision researchers; not for full-paper translation or broad multi-paper surveys.
+description: Produces source-grounded, visual-aware deep-reading reports for a single academic paper across research disciplines. Dynamically adapts to the paper domain, reader expertise, and goals such as understanding, peer review, reproduction, teaching, or cross-domain transfer while preserving technical and evidential rigor. Use when the user provides a PDF, URL, DOI, arXiv/PMID/other persistent ID, title, or full text and asks for 论文解读、论文剖析、精读、逐图表分析、快速看懂、explain/analyze/deep-read this paper. Not for full-paper translation or broad multi-paper surveys.
 ---
 
 # Paper Deep Reader
 
-把论文解读写成“可核查的技术教学”，而不是扩写摘要。默认读者是计算机视觉博士：语言尽量直白，技术细节必须足够复现论文的思想与证据链。
+把论文解读写成“可核查的研究教学”，而不是扩写摘要。默认读者是**具备科研训练、但不预设具体学科背景的研究者**：解释领域专用术语和必要前置知识，同时保留足以审查方法、推理和证据链的技术深度。
 
 ## 核心交付
 
@@ -21,37 +21,61 @@ description: Produces source-grounded, figure/table-aware deep-reading reports f
 └── source_map.json
 ```
 
-- `report.md`：遵循 [references/report-template.md](references/report-template.md) 的六部分中文报告。
-- `assets/`：论文关键图表的清晰裁图；图片应插在对应解读附近。
-- `source_map.json`：从 [references/source-map-template.json](references/source-map-template.json) 建立，记录版本、来源、页码约定、核心主张及证据锚点。它服务于核查，不替代报告。
+- `report.md`：遵循 [references/report-template.md](references/report-template.md) 的六部分报告。
+- `assets/`：论文关键图、表、图版或其他视觉证据的清晰裁图；图片应插在对应解读附近。
+- `source_map.json`：从 [references/source-map-template.json](references/source-map-template.json) 建立，记录版本、来源、读者画像、页码约定、核心主张及证据锚点。它服务于核查，不替代报告。
 
 若用户指定只在聊天中回答、指定输出位置或要求其他语言/格式，遵从用户。不要改动原始论文文件。
 
-## 先判断请求
+## 先判断请求与读者画像
 
-1. **没有论文或可定位的标题**：只问一个问题，请用户提供 PDF、URL、DOI、arXiv ID、标题或全文。
+1. **没有论文或可定位的标题**：只问一个问题，请用户提供 PDF、URL、DOI、预印本/数据库标识、标题或全文。
 2. **快速/值不值得读/速览**：执行“快读”，保留一句话结论、核心机制、2–4 个最关键图表、主结果和最大局限。
 3. **解读/剖析/精读/详尽/逐图表**：执行“深读”（默认），覆盖完整论文及影响结论的附录。
 4. **只问一个局部问题**：直接回答，但仍给出精确来源锚点；不要机械生成整份报告。
 5. **全文翻译或中英对照**：交给全文翻译类 skill；本 skill 只负责解释、重构和审查。
 6. **多论文综述**：交给文献综述类 skill；本 skill 可对其中一篇做深读。
 
-能从用户措辞安全推断时，不要再询问阅读深度、语言或输出位置。默认使用简体中文和 Markdown。
+使用 [references/audience-profiles.md](references/audience-profiles.md) 解析：
+
+```yaml
+domain: auto
+audience: research-generalist
+goal: understand
+depth: deep
+language: auto
+```
+
+解析优先级：
+
+```text
+用户本次明确要求
+→ 项目根目录 .paper-reader.yaml
+→ 对话中已明确的长期偏好
+→ 根据论文自动识别
+→ 默认画像
+```
+
+画像只改变解释层和重点，不能改变论文事实、证据等级或缺失信息。只有当歧义会实质改变报告时才提问；能安全推断时直接执行。默认跟随用户语言（无信号时使用简体中文）并输出 Markdown。
 
 典型调用：
 
-- `精读 @paper.pdf，面向计算机视觉博士，逐图表解释。` → 深读报告。
+- `精读 @paper.pdf，面向跨学科科研人员，逐图表解释。` → 通用深读报告。
+- `读者是做机器学习的博士，但不了解蛋白质组学。` → 跨学科画像。
+- `像审稿人一样严格分析这篇材料学论文。` → 材料领域 Lens + review 目标。
 - `快速看懂 2401.12345，告诉我值不值得复现。` → 快读并给决策。
-- `只解释式(7)如何对应图3的模块。` → 定向问答与精确锚点。
+- `只解释式(7)如何对应图3中的步骤。` → 定向问答与精确锚点。
 
 ## 每次调用要加载的材料
 
-1. 深读或快读前，阅读 [references/reading-protocol.md](references/reading-protocol.md)。
-2. 写报告前，阅读 [references/report-template.md](references/report-template.md)。
-3. 判定论文类型后，只加载 [references/paper-type-lenses.md](references/paper-type-lenses.md) 中对应的类型与 CV 专项检查。
-4. 交付前，阅读并执行 [references/quality-checklist.md](references/quality-checklist.md)。
+1. 先阅读 [references/audience-profiles.md](references/audience-profiles.md)，解析读者画像。
+2. 深读或快读前，阅读 [references/reading-protocol.md](references/reading-protocol.md)。
+3. 写报告前，阅读 [references/report-template.md](references/report-template.md)。
+4. 判定论文类型后，只加载 [references/paper-type-lenses.md](references/paper-type-lenses.md) 中对应部分。
+5. 识别学科后，只加载 [references/domain-lenses.md](references/domain-lenses.md) 中一个主领域和最多一个次领域。
+6. 交付前，阅读并执行 [references/quality-checklist.md](references/quality-checklist.md)。
 
-不要一次性把所有参考文件重复读入上下文。
+不要一次性加载全部领域清单，也不要把不相关的 Lens 机械写进报告。
 
 ## 工作流
 
@@ -60,23 +84,23 @@ description: Produces source-grounded, figure/table-aware deep-reading reports f
 按优先级使用：
 
 1. 用户提供的 PDF/全文；
-2. 官方 PDF、出版社/OpenReview/会议页面或 arXiv；
-3. 与同一版本匹配的 LaTeX/HTML、补充材料；
-4. 官方项目页和官方代码（仅在澄清实现细节时只读检查）；
+2. 出版社、会议、预印本平台、研究机构或数据仓库的官方版本；
+3. 与同一版本匹配的结构化正文、补充材料、研究协议、预注册或数据说明；
+4. 官方项目页、代码、数据、材料与实验协议（仅在澄清论文信息时只读检查）；
 5. 二手博客只用于背景，不能证明目标论文的主张。
 
-若从 PDF 切换到 arXiv/LaTeX，核对标题、作者、版本日期和正文差异。记录实际使用的来源及缺失项。来源不完整时继续做最佳可行解读，但明确降低置信度；严禁补写看不到的公式、数字或图表。
+若混用 PDF、结构化正文、预印本、正式版本或补充材料，核对标题、作者、标识符、版本日期和正文差异。记录实际使用的来源及缺失项。来源不完整时继续做最佳可行解读，但明确降低置信度；严禁补写看不到的公式、数字、实验或图表。
 
 ### 2. 建立四张清单，再开始写作
 
-完整阅读标题、摘要、引言、结论、方法、实验、关键附录，以及所有图表标题。建立：
+完整阅读标题、摘要、引言、结论、方法/理论、核心证据、关键附录，以及所有图表标题。建立：
 
 - **章节清单**：每节解决什么问题。
-- **图表清单**：所有编号图/表/算法的编号、页码、标题、作用和“关键/非关键”判定。
-- **公式清单**：关键公式、符号、来源位置、对应算法步骤。
-- **主张—证据清单**：每个核心贡献由哪张图、哪张表、哪项消融或哪条理论结果支撑。
+- **视觉清单**：所有编号 Figure/Table/Algorithm/Scheme/Plate/Box/Chart 的编号、页码、标题、作用和“关键/非关键”判定。
+- **形式化清单**：关键公式、定义、定理、模型或分析框架及其来源位置。
+- **主张—证据清单**：每个核心贡献由哪些实验、证明、观测、案例、档案材料或分析结果支撑。
 
-先写一句链条：**问题 → 旧方法瓶颈 → 核心洞见 → 机制 → 证据 → 适用边界**。若这条链说不清，说明尚未读懂，继续查源。
+先写一句链条：**问题 → 既有研究缺口 → 核心洞见 → 方法/论证 → 证据 → 适用边界**。若这条链说不清，说明尚未读懂，继续查源。
 
 ### 3. 提取并核查图表
 
@@ -104,49 +128,49 @@ python3 <skill-dir>/scripts/extract_pdf_assets.py crop PAPER.pdf OUTPUT/assets/c
 
 执行 [references/reading-protocol.md](references/reading-protocol.md) 的“逐图表协议”。每个**关键**图表都要嵌入原图并逐面板/逐轴/逐行解释；每个非关键编号图表也要在覆盖清单中说明其作用与为何略读。若源格式无法提取图片，使用明确的缺图占位和来源位置，不能伪造重绘。
 
-### 4. 重构方法，而非复述章节
+### 4. 重构方法、理论或论证，而非复述章节
 
-从输入到输出解释完整数据流。对每个承重模块说明：
+根据论文类型重构其核心逻辑：
 
-- 它修复哪个失败模式；
-- 输入、输出及形状/单位（若论文给出）；
-- 内部变换、训练信号或优化目标；
-- 训练阶段与推理阶段分别做什么；
-- 与前后模块如何连接；
-- 关键假设、代价和可能失效点；
-- 与最接近旧方法的 **Before / After / Diff / Trade-off**。
+- **方法/系统**：输入、处理步骤、输出、接口、优化或控制逻辑；
+- **理论**：定义、假设、引理、主结论和证明主线；
+- **实验科学**：样本/材料、处理、测量、分析与结果；
+- **观察/临床研究**：研究对象、暴露/干预、结局、混杂控制与推断；
+- **定性/人文研究**：材料选择、分析框架、解释步骤、反例与论证边界。
 
-用一个最小数值例子或具体 CV 场景走完主流程。类比只帮助建立直觉，随后必须回到论文的精确定义。
+对每个承重步骤说明它解决的问题、输入或前提、操作或推理、产出、与前后步骤的关系、关键假设、代价和失效点。与最接近旧工作做 **Before / After / Diff / Trade-off**。
 
-### 5. 解释数学，不堆公式
+用一个与论文领域匹配的最小实例走完主流程或论证链。类比只帮助建立直觉，随后必须回到论文的精确定义。
 
-只保留决定机制、训练目标、理论保证或实验解释的关键公式。每个公式必须：
+### 5. 解释形式化内容，不堆公式
 
-1. 与原文公式编号/章节/页码核对；
-2. 解释每个符号、索引、算子及张量形状（可知时）；
+只保留决定机制、理论保证、测量定义、统计推断或实验解释的关键公式/定义/定理。每个形式化对象必须：
+
+1. 与原文编号/章节/页码核对；
+2. 解释每个符号、索引、算子、单位、维度或适用集合（可知时）；
 3. 先说目标和直觉，再逐项解释；
-4. 映射到算法步骤或系统行为；
-5. 给一个小数值例子（适用时）；
+4. 映射到方法步骤、证明作用、测量过程或推断结论；
+5. 给一个最小数值、逻辑或领域实例（适用时）；
 6. 说明假设、近似、边界情况和可替代形式。
 
-PDF 文本与公式图像/LaTeX 冲突时，以可见公式或匹配版本的 LaTeX 为准，并记录冲突。
+PDF 文本与公式图像、结构化源文件或正式版本冲突时，以可核查的匹配版本为准，并记录冲突。论文没有数学公式时，解释其领域等价的关键定义、编码框架、实验协议或推理规则，不要强行数学化。
 
-### 6. 逐实验审查证据
+### 6. 逐证据单元审查
 
-每项重要实验分别回答：
+对每项重要实验、证明、观测、案例研究、定性材料或综合分析分别回答：
 
-- 实验问题/待证伪假设是什么？
-- 数据、划分、预处理、模型、训练/推理预算、基线和指标是什么？
-- 最关键的绝对数值、百分点差、相对变化和代价是什么？
+- 它要回答的问题或待证伪假设是什么？
+- 样本/材料/数据、对照、处理、测量、分析协议和评价标准是什么？
+- 最关键的数值、效应、逻辑关系、反例或解释性证据是什么？
 - 结果支持什么，不支持什么？
-- 基线是否公平，消融是否隔离变量，是否报告多随机种子/方差/显著性？
-- 是否存在泄漏、挑图、隐藏调参、指标失真或计算成本遗漏？
+- 对照或比较是否公平，设计能否隔离目标因素，不确定性是否充分报告？
+- 是否存在混杂、偏差、选择性报告、数据泄漏、测量失真或替代解释？
 
-把每个核心主张判为 **强支持 / 部分支持 / 弱支持 / 未支持**，并给出最省成本的证伪或补强实验。
+把每个核心主张判为 **强支持 / 部分支持 / 弱支持 / 未支持**，并给出最省成本的证伪或补强方案。
 
 ### 7. 写成六部分、分层可读的报告
 
-严格使用 [references/report-template.md](references/report-template.md) 的顶层六部分。报告开头让读者 3 分钟获得全局地图，后文再提供公式、模块、实验和图表细节。
+严格使用 [references/report-template.md](references/report-template.md) 的顶层六部分。报告开头让读者 3 分钟获得全局地图，后文再提供形式化内容、关键步骤、证据和图表细节。
 
 对重要事实使用紧邻文本的来源锚点，例如：
 
@@ -172,10 +196,10 @@ python3 <skill-dir>/scripts/validate_report.py OUTPUT/report.md \
 
 只有同时满足以下条件才算完成：
 
-- 一句话总结不超过 50 个中文字符，并准确包含“做什么 + 为什么有效”；
-- 读者能沿输入→模块→目标函数→输出重建方法；
-- 所有编号图表均进入覆盖清单，所有关键图表已嵌图并详细解读；
-- 核心公式符号完整、来源可定位、没有逻辑跳步；
-- 每个主要结论都能回溯到实验、理论或明确标注的推断；
-- 报告说明了最强证据、最弱主张、适用边界和最快证伪实验；
+- 一句话总结准确包含“研究做了什么 + 凭什么成立”；中文不超过 50 字，其他语言保持一个短句；
+- 读者能重建研究设计、方法流程、证明主线或核心论证；
+- 所有编号图表均进入覆盖清单，所有关键视觉证据已嵌图并详细解读；
+- 核心公式、定义或分析框架完整、来源可定位、没有逻辑跳步；
+- 每个主要结论都能回溯到实验、证明、观测、材料或明确标注的推断；
+- 报告说明了最强证据、最弱主张、适用边界和最快证伪/补强方案；
 - 无 `TODO`、伪造数字、伪造引用、空占位或未核查自动裁图。

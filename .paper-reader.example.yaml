@@ -1,0 +1,15 @@
+domain: auto
+audience: research-generalist
+goal: understand
+depth: deep
+language: auto
+
+reader_background:
+  primary_field: ""
+  familiar_topics: []
+  unfamiliar_topics: []
+
+preferences:
+  equation_detail: high
+  statistics_detail: high
+  embed_key_visuals: true

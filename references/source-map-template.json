@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "paper": {
     "title": "REPLACE_ME",
     "authors": [],
@@ -14,6 +14,16 @@
       }
     ],
     "page_convention": "1-based PDF page numbers"
+  },
+  "reader_profile": {
+    "domain": "REPLACE_ME",
+    "selected_lenses": [
+      "REPLACE_ME"
+    ],
+    "audience": "REPLACE_ME",
+    "goal": "REPLACE_ME",
+    "depth": "REPLACE_ME",
+    "language": "REPLACE_ME"
   },
   "claims": [
     {

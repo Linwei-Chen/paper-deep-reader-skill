@@ -2,4 +2,5 @@
 __pycache__/
 *.py[cod]
 .venv/
+.paper-reader.yaml
 *-deep-read/

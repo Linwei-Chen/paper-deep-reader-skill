@@ -19,8 +19,11 @@ from typing import Any, Iterable, Sequence
 
 
 CAPTION_RE = re.compile(
-    r"^\s*(?P<kind>Figure|Fig(?:ure)?\.?|Table|Algorithm|图|表|算法)"
-    r"\s*\.?\s*(?P<number>(?:[A-Z]\s*)?\d+(?:[.\-]\d+)?)"
+    r"^\s*(?P<kind>"
+    r"(?:Extended\s+Data|Supplementary|Supplemental)\s+(?:Figure|Fig\.?|Table)"
+    r"|Figure|Fig(?:ure)?\.?|Table|Algorithm|Scheme|Plate|Box|Chart"
+    r"|图|表|算法|图版|附图|附表|补充图|补充表)"
+    r"\s*\.?\s*(?P<number>(?:[A-Z]\s*)?\d+(?:[.\-]\d+)*(?:[A-Z])?)"
     r"\s*[:：.\-]?\s*(?P<caption>.*)$",
     re.IGNORECASE | re.DOTALL,
 )
@@ -139,11 +142,19 @@ def points_to_pixels(rect: Any, dpi: int) -> list[int]:
 
 def canonical_kind(raw_kind: str) -> str:
     value = raw_kind.lower().rstrip(".")
-    if value.startswith("fig") or value == "图":
+    if "fig" in value or value in {"图", "附图", "补充图"}:
         return "figure"
-    if value == "table" or value == "表":
+    if "table" in value or value in {"表", "附表", "补充表"}:
         return "table"
-    return "algorithm"
+    if value in {"algorithm", "算法"}:
+        return "algorithm"
+    if value in {"scheme"}:
+        return "scheme"
+    if value in {"plate", "图版"}:
+        return "plate"
+    if value == "box":
+        return "box"
+    return "chart"
 
 
 def safe_label(kind: str, number: str, page_number: int) -> str:
@@ -293,7 +304,7 @@ def suggested_table_crop(
     if max(above_score, below_score) <= 0:
         choose_above = float(caption_rect.y0) > page_height * 0.55
     else:
-        # Many ML/CV venues put table captions below tables; a small tie goes above.
+        # Many venues put table captions below tables; a small tie goes above.
         choose_above = above_score >= below_score * 0.88
     chosen = above if choose_above else below
     content_rect = union_rect(fitz, [item["bbox"] for item in chosen])
@@ -359,7 +370,7 @@ def suggested_crop(
         caption_rect, captions, page_rect
     )
 
-    if kind == "figure":
+    if kind in {"figure", "scheme", "plate", "chart"}:
         above_area = sum(rect_area(rect) for rect in above)
         below_area = sum(rect_area(rect) for rect in below)
         choose_above = bool(above and above_area >= below_area * 0.35)

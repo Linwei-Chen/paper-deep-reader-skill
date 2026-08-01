@@ -34,12 +34,16 @@ PLACEHOLDER_PATTERNS = [
     )
 ]
 ANCHOR_RE = re.compile(
-    r"(?:图|表|式|算法)\s*[A-Z]?\s*\d+(?:\([a-z0-9]+\))?"
-    r"|(?:Figure|Fig\.?|Table|Eq\.?|Equation|Algorithm)\s*[A-Z]?\s*\d+"
+    r"(?:图|表|附图|附表|补充图|补充表|图版|式|算法|定理|定义|命题|引理|案例|附录)"
+    r"\s*[A-Z]?\s*\d+(?:\([a-z0-9]+\))?"
+    r"|(?:Figure|Fig\.?|Table|Scheme|Plate|Box|Chart|Eq\.?|Equation|Algorithm|"
+    r"Theorem|Definition|Proposition|Lemma|Case|Appendix)\s*[A-Z]?\s*\d+"
     r"|PDF\s*p\.\s*\d+"
     r"|§\s*\d+(?:\.\d+)*",
     re.IGNORECASE,
 )
+CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+WORD_RE = re.compile(r"\b[\w'-]+\b", re.UNICODE)
 
 
 class Results:
@@ -127,10 +131,17 @@ def validate_structure(
         results.error("Section 1 has no elevator pitch.")
     else:
         pitch_length = visible_length(pitch)
-        if pitch_length > 50:
+        is_cjk_pitch = len(CJK_RE.findall(pitch)) >= 5
+        if is_cjk_pitch and pitch_length > 50:
             results.error(
-                f"Elevator pitch exceeds 50 visible characters ({pitch_length})."
+                f"Chinese elevator pitch exceeds 50 visible characters ({pitch_length})."
             )
+        elif not is_cjk_pitch:
+            pitch_words = len(WORD_RE.findall(strip_markdown(pitch)))
+            if pitch_words > 30:
+                results.error(
+                    f"Elevator pitch exceeds 30 words ({pitch_words})."
+                )
 
     is_quick = "本报告为快读" in text or "快读模式" in text
     plain_length = visible_length(text)
@@ -181,9 +192,23 @@ def validate_structure(
 def label_pattern(kind: str, number: str) -> re.Pattern[str]:
     escaped = re.escape(number).replace(r"\ ", r"\s*")
     if kind == "figure":
-        prefix = r"(?:图|Figure|Fig\.?)"
+        prefix = (
+            r"(?:图|附图|补充图|(?:Extended\s+Data|Supplementary|Supplemental)\s+"
+            r"(?:Figure|Fig\.?)|Figure|Fig\.?)"
+        )
     elif kind == "table":
-        prefix = r"(?:表|Table)"
+        prefix = (
+            r"(?:表|附表|补充表|(?:Extended\s+Data|Supplementary|Supplemental)\s+"
+            r"Table|Table)"
+        )
+    elif kind == "scheme":
+        prefix = r"(?:Scheme|方案)"
+    elif kind == "plate":
+        prefix = r"(?:Plate|图版)"
+    elif kind == "box":
+        prefix = r"(?:Box|框)"
+    elif kind == "chart":
+        prefix = r"(?:Chart|图表)"
     else:
         prefix = r"(?:算法|Algorithm)"
     return re.compile(prefix + r"\s*" + escaped + r"(?!\d)", re.IGNORECASE)
@@ -206,6 +231,23 @@ def load_json(path: Path, results: Results, label: str) -> Any | None:
     except json.JSONDecodeError as exc:
         results.error(f"{label} is invalid JSON ({path}): {exc}")
     return None
+
+
+def unresolved_json_paths(value: Any, path: str = "$") -> list[str]:
+    unresolved: list[str] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            unresolved.extend(unresolved_json_paths(child, f"{path}.{key}"))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            unresolved.extend(unresolved_json_paths(child, f"{path}[{index}]"))
+    elif isinstance(value, str) and value.strip().upper() in {
+        "REPLACE_ME",
+        "TODO",
+        "TBD",
+    }:
+        unresolved.append(path)
+    return unresolved
 
 
 def validate_manifest(
@@ -283,6 +325,11 @@ def validate_source_map(path: Path, results: Results) -> None:
     if not isinstance(source_map, dict):
         return
 
+    for placeholder_path in unresolved_json_paths(source_map):
+        results.error(
+            f"source_map.json contains an unresolved placeholder at {placeholder_path}."
+        )
+
     paper = source_map.get("paper")
     if not isinstance(paper, dict):
         results.error("source_map.json requires a 'paper' object.")
@@ -290,6 +337,33 @@ def validate_source_map(path: Path, results: Results) -> None:
         for field in ("title", "sources", "page_convention"):
             if not paper.get(field):
                 results.error(f"source_map.json paper.{field} is missing.")
+
+    schema_version = source_map.get("schema_version", 1)
+    if schema_version == 2:
+        profile = source_map.get("reader_profile")
+        if not isinstance(profile, dict):
+            results.error("source_map.json schema v2 requires a 'reader_profile' object.")
+        else:
+            for field in ("domain", "audience", "goal", "depth", "language"):
+                if not profile.get(field):
+                    results.error(
+                        f"source_map.json reader_profile.{field} is missing."
+                    )
+            selected_lenses = profile.get("selected_lenses")
+            if (
+                not isinstance(selected_lenses, list)
+                or not selected_lenses
+                or not all(
+                    isinstance(item, str) and item.strip()
+                    for item in selected_lenses
+                )
+            ):
+                results.error(
+                    "source_map.json reader_profile.selected_lenses must be "
+                    "a non-empty string list."
+                )
+    elif schema_version != 1:
+        results.warn(f"Unrecognized source_map schema_version: {schema_version!r}.")
 
     claims = source_map.get("claims")
     if not isinstance(claims, list) or not claims:
